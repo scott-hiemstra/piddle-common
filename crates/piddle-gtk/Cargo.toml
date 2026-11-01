@@ -1,0 +1,11 @@
+[package]
+name = "piddle-gtk"
+description = "PIDdle family GTK 4 bubble canvas widget and drawing helpers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+gtk = { version = "0.11", package = "gtk4", features = ["v4_14"] }

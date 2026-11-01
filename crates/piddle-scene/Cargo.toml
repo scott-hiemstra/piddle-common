@@ -1,0 +1,10 @@
+[package]
+name = "piddle-scene"
+description = "PIDdle family bubble scene: layout simulation, grouping, radial tree, camera and hit testing, without drawing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]

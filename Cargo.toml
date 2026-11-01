@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["crates/piddle-encode", "crates/piddle-scene", "crates/piddle-gtk"]
+
+# One version for every crate here: a release is one vX.Y.Z tag.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Scott Hiemstra <scott@hiemstra.us>"]
+repository = "https://github.com/scott-hiemstra/piddle-common"
+
+[workspace.dependencies]
+piddle-encode = { path = "crates/piddle-encode", version = "0.1.0" }

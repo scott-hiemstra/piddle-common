@@ -1,0 +1,11 @@
+[package]
+name = "piddle-encode"
+description = "PIDdle family visual encodings (CPU color, memory size), formatting and sanitizing of untrusted text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+libc = "0.2"

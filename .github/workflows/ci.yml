@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Every action is pinned to a full commit SHA (version in the comment) so a
+# moved tag can't change what builds; Dependabot proposes updates.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Format, lint, test (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 24.04 ships GTK 4.14, the minimum the family supports.
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install GTK 4 development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          targets: ${{ matrix.arch }}-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.arch }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      # The terminal UIs build these into static musl binaries.
+      - name: Toolkit-free crates build for musl
+        run: cargo build --locked --target ${{ matrix.arch }}-unknown-linux-musl -p piddle-encode -p piddle-scene
+
+      - name: Toolkit-free crates pull in no GUI libraries
+        run: |
+          if cargo tree --locked -e normal -p piddle-encode -p piddle-scene | grep -Ei 'gtk|glib|cairo|pango|graphene'; then
+            echo "::error::piddle-encode or piddle-scene depends on a GUI library"; exit 1
+          fi
+
+  # Build each app's main branch against this commit, so a change that
+  # breaks a consumer fails here, before it's tagged.
+  consumers:
+    name: Consumer ${{ matrix.app }}
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [piddle, kpiddle]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: common
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: scott-hiemstra/${{ matrix.app }}
+          path: app
+
+      - name: Install GTK 4 development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: consumer-${{ matrix.app }}
+          workspaces: app
+
+      # Same override as scripts/use-local-common.sh in the apps. Not
+      # --locked: the patch changes where these crates come from.
+      - name: Point the app at this commit
+        run: |
+          mkdir -p app/.cargo
+          {
+            echo '[patch."https://github.com/scott-hiemstra/piddle-common"]'
+            for c in piddle-encode piddle-scene piddle-gtk; do
+              echo "$c = { path = \"$GITHUB_WORKSPACE/common/crates/$c\" }"
+            done
+          } > app/.cargo/config.toml
+          cat app/.cargo/config.toml
+
+      - name: Clippy
+        working-directory: app
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: app
+        run: cargo test --workspace

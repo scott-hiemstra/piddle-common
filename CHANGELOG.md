@@ -3,6 +3,17 @@
 All notable changes to the piddle-common crates. Every crate shares one
 version; entries say which crate they touch.
 
+## [0.1.1] - 2026-11-01
+
+### Added
+
+- `piddle-gtk::details`: the building blocks of the GUIs' details windows,
+  so PIDdle and kpiddle stop copying them: the shared CSS (`CSS`,
+  `add_css`), a details `window` with Escape to close, `stat_card`,
+  `set_text`, and `confirm_typed`, the type-the-name confirmation for risky
+  actions (the action stays disabled until the name is typed exactly;
+  `name_matches` is the rule, with tests).
+
 ## [0.1.0] - 2026-11-01
 
 ### Added

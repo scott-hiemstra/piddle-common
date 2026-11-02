@@ -38,11 +38,28 @@ commit and rewrites every `rev`.
 
 1. Check out the repos side by side (`~/Code/piddle-common`, `~/Code/piddle`,
    `~/Code/kpiddle`) and run `scripts/use-local-common.sh on` in each app.
-   It writes a gitignored `.cargo/config.toml` that points the app at
-   `../piddle-common`, so edits here rebuild there with no tag or push.
-   `scripts/use-local-common.sh off` removes it.
+   It adds a marked `[patch]` block to the app's gitignored
+   `.cargo/config.toml` that points it at `../piddle-common` (or at a path
+   given after `on`, or `$PIDDLE_COMMON`), so edits here rebuild there with
+   no tag or push. `scripts/use-local-common.sh off` removes the block;
+   other settings in the file are kept.
+   The apps' scripts are thin wrappers: the logic is this repo's
+   `scripts/use-local-common.sh APP_DIR on|off`, the one copy, tested by
+   `scripts/test-use-local-common.sh` in CI.
+   - The script comes from your piddle-common checkout, not from the commit
+     the app pins, so an older checkout without it needs a `git pull`.
+   - `off` re-resolves Cargo.lock against the pinned commit rather than
+     restoring an earlier copy; check `git diff Cargo.lock` before
+     committing it.
+   - If the checkout is gone, `off` can't run; delete the block between the
+     `# >>> use-local-common.sh` and `# <<< use-local-common.sh` lines in
+     the app's `.cargo/config.toml` by hand.
+   - Anything the script can't take apart safely (damaged markers, a patch
+     table of the app's own, an old-style file with additions) is refused
+     and left unchanged.
 2. CI here builds and tests piddle and kpiddle `main` against every commit
-   (the `consumers` job), so a breaking change shows up before a tag.
+   (the `consumers` job, which uses the same script), so a breaking change
+   shows up before a tag.
 3. Release: add the changes to the Unreleased section of CHANGELOG.md as
    they land; to release, bump `version` in Cargo.toml (one version for
    every crate), date the section, tag `vX.Y.Z` and push the tag. Then run

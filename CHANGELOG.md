@@ -3,6 +3,21 @@
 All notable changes to the piddle-common crates. Every crate shares one
 version; entries say which crate they touch.
 
+## [Unreleased]
+
+### Added
+
+- `scripts/use-local-common.sh APP_DIR on|off`: points an app at this
+  checkout through a marked `[patch]` block in its `.cargo/config.toml`,
+  keeping its other settings and restoring its Cargo.lock on `off`. It was
+  copied in each app; the apps now call this one, and the CI `consumers` job
+  uses it too. It refuses what it can't take apart safely (damaged markers,
+  an app's own patch table, an old-style file with additions), escapes
+  paths for TOML and replaces the file atomically. A script, not crate
+  code, so no release is needed for it.
+- `scripts/test-use-local-common.sh`, run by a new CI job: every case above
+  against a throwaway app, under paths with spaces, quotes and backslashes.
+
 ## [0.1.1] - 2026-11-01
 
 ### Added

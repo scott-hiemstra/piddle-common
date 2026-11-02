@@ -67,6 +67,22 @@ jobs:
 
   # Build each app's main branch against this commit, so a change that
   # breaks a consumer fails here, before it's tagged.
+  helper:
+    name: use-local-common.sh tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+
+      # Builds a throwaway app pinning piddle-common, under paths with
+      # spaces, quotes and backslashes, and checks every case against what
+      # Cargo resolves.
+      - name: Test the helper
+        run: scripts/test-use-local-common.sh
+
   consumers:
     name: Consumer ${{ matrix.app }}
     strategy:
@@ -99,17 +115,11 @@ jobs:
           key: consumer-${{ matrix.app }}
           workspaces: app
 
-      # Same override as scripts/use-local-common.sh in the apps. Not
-      # --locked: the patch changes where these crates come from.
+      # The same script the apps use for local development. Not --locked
+      # in the steps below: the patch changes where these crates come from.
       - name: Point the app at this commit
         run: |
-          mkdir -p app/.cargo
-          {
-            echo '[patch."https://github.com/scott-hiemstra/piddle-common"]'
-            for c in piddle-encode piddle-scene piddle-gtk; do
-              echo "$c = { path = \"$GITHUB_WORKSPACE/common/crates/$c\" }"
-            done
-          } > app/.cargo/config.toml
+          common/scripts/use-local-common.sh app on
           cat app/.cargo/config.toml
 
       - name: Clippy

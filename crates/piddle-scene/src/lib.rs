@@ -51,6 +51,11 @@ pub enum Motion {
     Active,
 }
 
+/// Space between a cluster's outer hull and its groups' hulls.
+const CLUSTER_PAD: f64 = 10.0;
+/// Minimum gap between groups that aren't in the same cluster.
+const CLUSTER_GAP: f64 = 40.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arrangement {
     /// One loose cluster around the center.
@@ -109,12 +114,34 @@ pub struct Group<G> {
     /// Sum of the members' displayed CPU.
     pub cpu: f64,
     pub mem: u64,
+    /// Index into [`Scene::clusters`].
+    pub cluster: Option<usize>,
+}
+
+/// Gives a group's cluster key from its info (see [`Scene::set_cluster_of`]).
+pub type ClusterOf<G> = fn(&G) -> Option<Arc<str>>;
+
+/// Groups kept together under one outer hull (see [`Scene::set_cluster_of`]).
+pub struct Cluster {
+    pub key: Arc<str>,
+    /// Drawn outline, around its groups' hulls.
+    pub cx: f64,
+    pub cy: f64,
+    pub hull: f64,
+    /// Groups with live members, and the members' totals.
+    pub groups: usize,
+    pub members: usize,
+    pub cpu: f64,
+    pub mem: u64,
 }
 
 pub struct Scene<T: Item> {
     pub bubbles: Vec<Bubble<T>>,
     index: HashMap<T::Key, usize>,
     pub groups: Vec<Group<T::Group>>,
+    /// Empty unless [`Scene::set_cluster_of`] puts groups in clusters.
+    pub clusters: Vec<Cluster>,
+    cluster_of: Option<ClusterOf<T::Group>>,
     arrangement: Arrangement,
     pub hover: Option<T::Key>,
     pub mouse: (f64, f64),
@@ -145,6 +172,8 @@ impl<T: Item> Scene<T> {
             bubbles: Vec::new(),
             index: HashMap::new(),
             groups: Vec::new(),
+            clusters: Vec::new(),
+            cluster_of: None,
             arrangement: Arrangement::Free,
             hover: None,
             mouse: (0.0, 0.0),
@@ -251,6 +280,14 @@ impl<T: Item> Scene<T> {
         }
     }
 
+    /// Keep groups together under an outer hull: groups whose info gives the
+    /// same key form a [`Cluster`] in the Grouped arrangement (PIDdle: the
+    /// containers of one Compose project or pod). `None` for a group leaves it
+    /// on its own. Takes effect at the next sync or arrangement change.
+    pub fn set_cluster_of(&mut self, f: Option<ClusterOf<T::Group>>) {
+        self.cluster_of = f;
+    }
+
     /// Switch arrangement and regroup every bubble with `group_of`.
     pub fn set_arrangement(&mut self, a: Arrangement, group_of: impl Fn(&T) -> GroupSpec<T::Group>) {
         self.arrangement = a;
@@ -327,6 +364,7 @@ impl<T: Item> Scene<T> {
                                 members: 0,
                                 cpu: 0.0,
                                 mem: 0,
+                                cluster: None,
                             }
                         }
                     };
@@ -354,7 +392,19 @@ impl<T: Item> Scene<T> {
                 groups[gi].y = y;
             }
         }
+        // Clusters, from each group's info.
+        let mut clusters: Vec<Cluster> = Vec::new();
+        for g in &mut groups {
+            g.cluster = None;
+            let Some(key) = self.cluster_of.and_then(|f| f(&g.info)) else { continue };
+            let ci = clusters.iter().position(|c| c.key == key).unwrap_or_else(|| {
+                clusters.push(Cluster { key, cx: 0.0, cy: 0.0, hull: 0.0, groups: 0, members: 0, cpu: 0.0, mem: 0 });
+                clusters.len() - 1
+            });
+            g.cluster = Some(ci);
+        }
         self.groups = groups;
+        self.clusters = clusters;
     }
     /// Lay out the very first sample on a sunflower spiral, sorted so that
     /// related items start next to each other.
@@ -572,6 +622,18 @@ impl<T: Item> Scene<T> {
             g.hull = g.hull.max(d);
         }
 
+        // Each cluster's center, weighted by its groups' areas; its groups
+        // are pulled towards it, on top of the pull to the middle.
+        let mut centers = vec![(0.0f64, 0.0f64, 0.0f64); self.clusters.len()];
+        for g in self.groups.iter().filter(|g| g.members > 0) {
+            if let Some(ci) = g.cluster {
+                let w = g.r.max(1.0).powi(2);
+                centers[ci].0 += g.x * w;
+                centers[ci].1 += g.y * w;
+                centers[ci].2 += w;
+            }
+        }
+
         // Groups are themselves circles packed with position-based dynamics.
         let prev: Vec<(f64, f64)> = self.groups.iter().map(|g| (g.x, g.y)).collect();
         for g in &mut self.groups {
@@ -579,6 +641,12 @@ impl<T: Item> Scene<T> {
             g.r = (g.r.sqrt() * 1.15 + 8.0).max(g.hull);
             g.vx -= g.x * 0.004 / sa;
             g.vy -= g.y * 0.004 * sa;
+            if let Some(&(x, y, w)) = g.cluster.and_then(|ci| centers.get(ci))
+                && w > 0.0
+            {
+                g.vx += (x / w - g.x) * 0.03;
+                g.vy += (y / w - g.y) * 0.03;
+            }
             g.x += g.vx;
             g.y += g.vy;
         }
@@ -594,7 +662,9 @@ impl<T: Item> Scene<T> {
                     }
                     let (a, b) = (&self.groups[i], &self.groups[j]);
                     let (dx, dy) = (b.x - a.x, b.y - a.y);
-                    let min = a.r + b.r + 16.0;
+                    // Room for a cluster's outer hull between it and others.
+                    let gap = if a.cluster == b.cluster { 16.0 } else { CLUSTER_GAP };
+                    let min = a.r + b.r + gap;
                     if dx.abs() >= min || dy.abs() >= min {
                         continue;
                     }
@@ -613,9 +683,137 @@ impl<T: Item> Scene<T> {
                 }
             }
         }
+        self.separate_clusters();
         for (g, (px, py)) in self.groups.iter_mut().zip(prev) {
             g.vx = (g.x - px) * 0.72;
             g.vy = (g.y - py) * 0.72;
+        }
+        self.outline_clusters();
+    }
+
+    /// Treat each cluster as one circle around its groups, and push every
+    /// group outside it (and the cluster the other way) until there is room
+    /// for the outer hull, so no stranger ends up inside one.
+    fn separate_clusters(&mut self) {
+        if self.clusters.is_empty() {
+            return;
+        }
+        for _ in 0..2 {
+            // (x, y, radius, mass) per cluster, from the simulated circles.
+            let mut circ = vec![(0.0f64, 0.0f64, 0.0f64, 0.0f64); self.clusters.len()];
+            for g in self.groups.iter().filter(|g| g.members > 0) {
+                if let Some(ci) = g.cluster {
+                    let w = g.r * g.r;
+                    circ[ci].0 += g.x * w;
+                    circ[ci].1 += g.y * w;
+                    circ[ci].3 += w;
+                }
+            }
+            for c in &mut circ {
+                if c.3 > 0.0 {
+                    c.0 /= c.3;
+                    c.1 /= c.3;
+                }
+            }
+            for g in self.groups.iter().filter(|g| g.members > 0) {
+                if let Some(ci) = g.cluster {
+                    let c = &mut circ[ci];
+                    c.2 = c.2.max(((g.x - c.0).powi(2) + (g.y - c.1).powi(2)).sqrt() + g.r);
+                }
+            }
+            for ci in 0..circ.len() {
+                let (cx, cy, cr, cm) = circ[ci];
+                if cm <= 0.0 {
+                    continue;
+                }
+                // Other clusters, as wholes.
+                for (cj, other) in circ.iter_mut().enumerate().skip(ci + 1) {
+                    let (ox, oy, or, om) = *other;
+                    if om <= 0.0 {
+                        continue;
+                    }
+                    let (dx, dy) = (ox - cx, oy - cy);
+                    let min = cr + or + CLUSTER_GAP;
+                    let d = (dx * dx + dy * dy).sqrt();
+                    if d >= min {
+                        continue;
+                    }
+                    let (nx, ny) = if d > 1e-6 { (dx / d, dy / d) } else { unit(ci * 31 + cj) };
+                    let push = (min - d) * 0.8;
+                    let (wo, wc) = (cm / (cm + om), om / (cm + om));
+                    for g in &mut self.groups {
+                        if g.cluster == Some(cj) {
+                            g.x += nx * push * wo;
+                            g.y += ny * push * wo;
+                        } else if g.cluster == Some(ci) {
+                            g.x -= nx * push * wc;
+                            g.y -= ny * push * wc;
+                        }
+                    }
+                    other.0 += nx * push * wo;
+                    other.1 += ny * push * wo;
+                }
+                // Groups in no cluster.
+                for j in 0..self.groups.len() {
+                    let g = &self.groups[j];
+                    if g.members == 0 || g.cluster.is_some() {
+                        continue;
+                    }
+                    let (dx, dy) = (g.x - cx, g.y - cy);
+                    let min = cr + g.r + CLUSTER_GAP;
+                    let d = (dx * dx + dy * dy).sqrt();
+                    if d >= min {
+                        continue;
+                    }
+                    let (nx, ny) = if d > 1e-6 { (dx / d, dy / d) } else { unit(ci * 31 + j) };
+                    let gm = g.r * g.r;
+                    let push = (min - d) * 0.8;
+                    let (wg, wc) = (cm / (cm + gm), gm / (cm + gm));
+                    self.groups[j].x += nx * push * wg;
+                    self.groups[j].y += ny * push * wg;
+                    for k in 0..self.groups.len() {
+                        if self.groups[k].cluster == Some(ci) {
+                            self.groups[k].x -= nx * push * wc;
+                            self.groups[k].y -= ny * push * wc;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Each cluster's drawn hull: around its groups' drawn hulls.
+    fn outline_clusters(&mut self) {
+        for c in &mut self.clusters {
+            (c.cx, c.cy, c.hull, c.groups, c.members, c.cpu, c.mem) = (0.0, 0.0, 0.0, 0, 0, 0.0, 0);
+        }
+        let mut weight = vec![0.0f64; self.clusters.len()];
+        for g in self.groups.iter().filter(|g| g.members > 0) {
+            let Some(ci) = g.cluster else { continue };
+            let c = &mut self.clusters[ci];
+            let w = g.hull.max(1.0).powi(2);
+            c.cx += g.cx * w;
+            c.cy += g.cy * w;
+            weight[ci] += w;
+            c.groups += 1;
+            c.members += g.members;
+            c.cpu += g.cpu;
+            c.mem += g.mem;
+        }
+        for (c, w) in self.clusters.iter_mut().zip(&weight) {
+            if *w > 0.0 {
+                c.cx /= w;
+                c.cy /= w;
+            }
+        }
+        for g in self.groups.iter().filter(|g| g.members > 0) {
+            let Some(ci) = g.cluster else { continue };
+            let c = &mut self.clusters[ci];
+            let d = ((g.cx - c.cx).powi(2) + (g.cy - c.cy).powi(2)).sqrt() + g.hull;
+            c.hull = c.hull.max(d);
+        }
+        for c in &mut self.clusters {
+            c.hull += CLUSTER_PAD;
         }
     }
 
@@ -765,6 +963,15 @@ impl<T: Item> Scene<T> {
             bb.1 = bb.1.min(b.y - b.target_r);
             bb.2 = bb.2.max(b.x + b.target_r);
             bb.3 = bb.3.max(b.y + b.target_r);
+        }
+        // Clusters' outer hulls too, so their outlines and labels stay in view.
+        if self.arrangement == Arrangement::Grouped {
+            for c in self.clusters.iter().filter(|c| c.members > 0) {
+                bb.0 = bb.0.min(c.cx - c.hull);
+                bb.1 = bb.1.min(c.cy - c.hull);
+                bb.2 = bb.2.max(c.cx + c.hull);
+                bb.3 = bb.3.max(c.cy + c.hull);
+            }
         }
         if bb.0 > bb.2 {
             return false;
@@ -942,6 +1149,95 @@ mod tests {
             for b in s.bubbles.iter().filter(|b| s.groups[b.group].key == g.key) {
                 let d = ((b.x - g.cx).powi(2) + (b.y - g.cy).powi(2)).sqrt() + b.r;
                 assert!(d <= g.hull + 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn clusters_keep_their_groups_together() {
+        // Six groups; a, c and e form one cluster, the rest stand alone.
+        let groups = ["a", "b", "c", "d", "e", "f"];
+        let items: Vec<It> = (0..36)
+            .map(|id| It {
+                id,
+                instance: 0,
+                parent: None,
+                r: 6.0 + (id % 4) as f64 * 3.0,
+                cpu: 0.0,
+                group: groups[id as usize % 6],
+            })
+            .collect();
+        let spec = |it: &It| GroupSpec { key: it.group.into(), info: it.group.to_string() };
+        let mut s = Scene::new();
+        s.set_cluster_of(Some(|g: &String| ["a", "c", "e"].contains(&g.as_str()).then(|| Arc::from("ace"))));
+        s.set_arrangement(Arrangement::Grouped, spec);
+        s.sync(items, spec);
+        let frames = settle(&mut s);
+        assert!(frames < 3000, "never came to rest");
+        assert_eq!(overlaps(&s, false), 0);
+        assert_eq!(s.clusters.len(), 1);
+        let c = &s.clusters[0];
+        assert_eq!((c.groups, c.members), (3, 18));
+        let dist = |a: &Group<String>, b: &Group<String>| ((a.cx - b.cx).powi(2) + (a.cy - b.cy).powi(2)).sqrt();
+        for g in &s.groups {
+            if g.cluster.is_some() {
+                // Inside the outer hull.
+                let d = ((g.cx - c.cx).powi(2) + (g.cy - c.cy).powi(2)).sqrt() + g.hull;
+                assert!(d <= c.hull + 1e-6, "{} sticks out of its cluster", g.key);
+            } else {
+                // Outsiders stay outside it.
+                let d = ((g.cx - c.cx).powi(2) + (g.cy - c.cy).powi(2)).sqrt();
+                assert!(d >= c.hull + g.hull - 1.0, "{} is inside the cluster", g.key);
+            }
+        }
+        // Each member's nearest group is another member.
+        for g in s.groups.iter().filter(|g| g.cluster.is_some()) {
+            let nearest = s.groups.iter().filter(|o| o.key != g.key).min_by(|a, b| dist(g, a).total_cmp(&dist(g, b)));
+            assert!(nearest.unwrap().cluster.is_some(), "{}'s nearest group is outside its cluster", g.key);
+        }
+        // Without cluster keys, no clusters.
+        s.set_cluster_of(None);
+        s.set_arrangement(Arrangement::Grouped, spec);
+        assert!(s.clusters.is_empty());
+    }
+
+    #[test]
+    fn neighbouring_clusters_stay_apart() {
+        let groups = ["a", "b", "c", "d", "e", "f", "g"];
+        let items: Vec<It> = (0..49)
+            .map(|id| It {
+                id,
+                instance: 0,
+                parent: None,
+                r: 5.0 + (id % 5) as f64 * 3.0,
+                cpu: 0.0,
+                group: groups[id as usize % 7],
+            })
+            .collect();
+        let spec = |it: &It| GroupSpec { key: it.group.into(), info: it.group.to_string() };
+        let mut s = Scene::new();
+        s.set_cluster_of(Some(|g: &String| match g.as_str() {
+            "a" | "b" | "c" => Some(Arc::from("abc")),
+            "d" | "e" => Some(Arc::from("de")),
+            _ => None,
+        }));
+        s.set_arrangement(Arrangement::Grouped, spec);
+        s.sync(items, spec);
+        assert!(settle(&mut s) < 3000, "never came to rest");
+        assert_eq!(overlaps(&s, false), 0);
+        assert_eq!(s.clusters.len(), 2);
+        let (a, b) = (&s.clusters[0], &s.clusters[1]);
+        let d = ((a.cx - b.cx).powi(2) + (a.cy - b.cy).powi(2)).sqrt();
+        assert!(d >= a.hull + b.hull - 1.0, "the clusters' outer hulls overlap");
+        for g in &s.groups {
+            for c in &s.clusters {
+                let inside = g.cluster.is_some_and(|ci| Arc::ptr_eq(&s.clusters[ci].key, &c.key));
+                let d = ((g.cx - c.cx).powi(2) + (g.cy - c.cy).powi(2)).sqrt();
+                if inside {
+                    assert!(d + g.hull <= c.hull + 1e-6, "{} sticks out of {}", g.key, c.key);
+                } else {
+                    assert!(d >= c.hull + g.hull - 1.0, "{} is inside {}", g.key, c.key);
+                }
             }
         }
     }

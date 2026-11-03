@@ -17,6 +17,13 @@ version; entries say which crate they touch.
   code, so no release is needed for it.
 - `scripts/test-use-local-common.sh`, run by a new CI job: every case above
   against a throwaway app, under paths with spaces, quotes and backslashes.
+- `piddle-scene`: clusters. `Scene::set_cluster_of` maps a group's info to
+  a cluster key; in the Grouped arrangement, groups with the same key are
+  pulled together and packed as one circle, so no other group ends up
+  inside, and `Scene::clusters` gives each cluster's outer hull and totals
+  for drawing. The camera keeps the outer hulls in view. PIDdle uses it for
+  the containers of one Compose project or pod. Additive: apps that don't
+  call it are unchanged.
 
 ## [0.1.1] - 2026-11-01
 

@@ -14,8 +14,9 @@
 # can't take apart safely (damaged markers, a patch table of the app's own,
 # an old-style file with additions) is refused and left unchanged.
 #
-# Cargo.lock: while patched, Cargo records these crates without their git
-# source. "off" re-resolves once against the pinned commit, which puts the
+# Cargo.lock: "on" moves these crates to the checkout's versions (Cargo
+# ignores a patch whose version differs from the locked one), and while
+# patched, Cargo records them without their git source. "off" re-resolves once against the pinned commit, which puts the
 # source back; it doesn't restore an earlier copy of the file, so check
 # `git diff Cargo.lock` before committing it. Cargo still fetches the pinned
 # commit (it must be on GitHub) even while patched.
@@ -131,6 +132,22 @@ case "$2" in
     else
       write_config "$block"
     fi
+    # Cargo ignores a patch whose version differs from the locked one (the
+    # checkout is ahead of the pinned release), so move the lock to the
+    # patched crates. Ones the app doesn't use are skipped.
+    for c in "$common"/crates/*/; do
+      c=$(basename "$c")
+      if ! out=$(cd "$root" && cargo update -q -p "$c" 2>&1); then
+        case "$out" in
+          *"did not match any packages"*) ;;
+          *)
+            printf '%s\n' "$out" >&2
+            echo "error: cargo update -p $c failed; $config has the patch, Cargo.lock may not use it yet" >&2
+            exit 1
+            ;;
+        esac
+      fi
+    done
     echo "building against $common"
     ;;
   off)

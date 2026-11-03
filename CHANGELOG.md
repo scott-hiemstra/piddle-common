@@ -3,7 +3,7 @@
 All notable changes to the piddle-common crates. Every crate shares one
 version; entries say which crate they touch.
 
-## [Unreleased]
+## [0.1.2] - 2026-11-03
 
 ### Added
 
@@ -24,6 +24,13 @@ version; entries say which crate they touch.
   for drawing. The camera keeps the outer hulls in view. PIDdle uses it for
   the containers of one Compose project or pod. Additive: apps that don't
   call it are unchanged.
+
+### Fixed
+
+- `scripts/use-local-common.sh on` had no effect once the checkout's version
+  was ahead of the app's pinned release: Cargo ignores a patch whose
+  version differs from the locked one. `on` now moves the lock to the
+  checkout's crates (`cargo update -p` for each one the app uses).
 
 ## [0.1.1] - 2026-11-01
 
